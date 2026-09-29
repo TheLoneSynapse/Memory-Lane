@@ -31,3 +31,6 @@ server/data
 *.njsproj
 *.sln
 *.sw?
+
+# Bob/Freebuff app cache
+.freebuff
