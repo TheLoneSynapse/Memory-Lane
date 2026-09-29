@@ -61,6 +61,60 @@ State lives in one JSON document so the app survives restarts and a demo can be
 reset in a single call. Photos are stored as data URLs (the JSON body limit is
 25 MB).
 
+### Per-user storage — Supabase (optional)
+
+Out of the box everything lives in one local `server/data/db.json`: one
+shared store, no login, wiped when the host's disk is replaced on redeploy.
+Set two environment variables and the *same server* becomes a real multi-user
+app — each person signs in with email and password, their memories live in
+their own row, and photographs go to Supabase Storage instead of inside the
+JSON.
+
+**Free setup, about ten minutes:**
+
+1. Create a free project at <https://supabase.com> (no credit card).
+2. Run the contents of `server/supabase-schema.sql` in the SQL editor
+   (Dashboard → SQL Editor → New query → Run).
+3. Authentication → Providers → Email: leave **Confirm email** off — the app
+   creates accounts itself and no SMTP service is needed.
+4. Copy Settings → API into `.env` as `SUPABASE_URL` and
+   `SUPABASE_SERVICE_ROLE_KEY`.
+5. `npm run server`. The boot log prints `login : on`, the photos bucket is
+   created automatically, and every new visitor gets a seeded document of
+   their own.
+
+| | File mode (default) | Supabase mode |
+| --- | --- | --- |
+| Who | one shared store | one row per signed-in person (`documents`) |
+| Login | none | email + password, 30-day session cookie |
+| Photos | base64 inside the JSON | `photos/<userId>/…`, served via `/api/photos` |
+| Survives a redeploy | only with a persistent disk | yes — data lives in Supabase |
+| Reads | straight from disk | cached per user, saved on a per-user queue |
+
+How it fits together:
+
+- `server/supabase.js` — the only file that talks to Supabase: documents,
+  sessions, accounts and photo uploads (service-role key, server-side only).
+- `server/auth.js` — `POST /api/auth/register|login|logout`, `GET
+  /api/auth/me`, and the guard that runs every `/api` request as the signed-in
+  user. Without Supabase configured the guard is a no-op, so local development
+  is unchanged.
+- `server/store.js` — routes still call `readDb()`/`mutate()`; in Supabase
+  mode those resolve to the current user's cached document (loaded by the
+  guard before the handler runs), in file mode to `db.json` as always.
+- `server/photos.js` — moves `data:image/…` photos out of the request body
+  into Storage, and serves them back only to the person who owns them.
+
+RLS is enabled on both tables with no policies, so the anon and authenticated
+can touch nothing; only this server, holding the service role key, reads or
+writes. The photos bucket stays private — images are fetched through
+`GET /api/photos/<user>/<file>`, which checks the session owns the folder.
+
+> **Note for stored agents:** with login on, `POST /api/agent/*` tools called
+> by AssemblyAI's servers need a session cookie they will never have. The
+> inline companion (the default) runs its tools in the browser, where the
+> cookie is sent normally, and works as before.
+
 ### Endpoints
 
 | Method | Path | Used by |

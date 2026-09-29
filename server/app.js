@@ -10,7 +10,9 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
+import { authGuard, authRouter } from "./auth.js";
 import { HttpError } from "./http.js";
+import { offloadPhotos, photosRouter } from "./photos.js";
 import agentRouter from "./routes/agent.js";
 import eventsRouter from "./routes/events.js";
 import facesRouter from "./routes/faces.js";
@@ -27,6 +29,7 @@ const clientDir = path.resolve(here, "..", "dist");
 /** Lets the Vite dev server (and file:// style tools) call the API directly. */
 function cors(req, res, next) {
   res.setHeader("Access-Control-Allow-Origin", req.headers.origin ?? "*");
+  res.setHeader("Access-Control-Allow-Credentials", "true");
   res.setHeader("Vary", "Origin");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,PUT,DELETE,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -63,6 +66,16 @@ export function createApp() {
       uptimeSeconds: Math.round(process.uptime()),
     });
   });
+
+  // Who is calling: with Supabase configured, everything under /api except
+  // /api/auth/* and /api/health needs the session cookie, and the request is
+  // then run as that user. Without it, this is a no-op (local file mode).
+  app.use("/api/auth", authRouter);
+  app.use("/api", authGuard);
+
+  // Photos travel as data URLs in, and come back as /api/photos/... out.
+  app.use("/api", offloadPhotos);
+  app.use("/api/photos", photosRouter);
 
   app.use("/api/profile", profileRouter);
   app.use("/api/home", homeRouter);

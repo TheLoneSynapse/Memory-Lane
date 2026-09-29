@@ -27,11 +27,22 @@ export function text(value, { field, max = 280, fallback = "" }) {
   return trimmed.length > max ? trimmed.slice(0, max) : trimmed;
 }
 
-/** Coerces an optional image data URL (a captured photo). */
+/**
+ * Coerces an optional image (a captured photo).
+ *
+ * Accepts a fresh `data:image/...` URL from the camera, and also the
+ * `/api/photos/...` (or absolute) URL a photo is stored as once it has been
+ * uploaded — screens often echo back what they were given.
+ */
 export function optionalImageDataUrl(value, { field = "photoDataUrl" } = {}) {
   if (value === undefined || value === null || value === "") return null;
-  if (typeof value !== "string" || !value.startsWith("data:image/")) {
-    throw new HttpError(400, `"${field}" must be an image data URL.`);
+  const isImage =
+    typeof value === "string" &&
+    (value.startsWith("data:image/") ||
+      value.startsWith("/api/photos/") ||
+      /^https?:\/\//.test(value));
+  if (!isImage) {
+    throw new HttpError(400, `"${field}" must be an image.`);
   }
   return value;
 }

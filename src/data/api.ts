@@ -19,6 +19,13 @@ export class ApiError extends Error {
   }
 }
 
+/** Notified when any request comes back 401 — registered by the auth store. */
+let unauthorizedHandler: (() => void) | null = null;
+
+export function setUnauthorizedHandler(handler: (() => void) | null): void {
+  unauthorizedHandler = handler;
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   let response: Response;
   try {
@@ -37,6 +44,9 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
 
   if (!response.ok) {
+    // 401 means the session is gone (expired, or signed out elsewhere):
+    // the auth store re-asks the server and the sign-in screen appears.
+    if (response.status === 401) unauthorizedHandler?.();
     let message = `The memory service refused that request (${response.status}).`;
     try {
       const body = (await response.json()) as { error?: { message?: string } };

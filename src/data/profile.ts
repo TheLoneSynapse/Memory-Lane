@@ -147,6 +147,21 @@ export function getProfile(): Profile {
   return state;
 }
 
+/**
+ * Forgets this device's copy — used when signing out, so the next person on
+ * this browser starts clean rather than inheriting the previous person's
+ * name. Their own account gives their name back on the next sign-in.
+ */
+export function clearProfile(): void {
+  state = { ...DEFAULT_PROFILE };
+  try {
+    window.localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    /* nothing to clear */
+  }
+  publish();
+}
+
 /** Subscribes a component to the personal details. */
 export function useProfile(): Profile {
   return useSyncExternalStore(subscribe, getProfile, getProfile);

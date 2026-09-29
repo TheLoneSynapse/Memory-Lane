@@ -1,14 +1,27 @@
 /**
  * The Memory Lane data store.
  *
- * Everything the app knows lives in one JSON document on disk
- * (server/data/db.json by default). It is small, human-readable and easy to
- * reset — perfect for a demo, and it keeps the API stateless between requests.
+ * Two ways to keep everything the app knows, chosen by environment:
+ *
+ * - Local (no Supabase configured): one JSON document on disk
+ *   (server/data/db.json by default) — small, human-readable, easy to reset.
+ * - Cloud (SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY set): each signed-in user
+ *   owns one JSON document row of their own. auth.js loads it into memory
+ *   before the request handlers run; changes are written back on a per-user
+ *   queue, so every route in routes/ works unchanged in both modes.
  */
+import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { HttpError } from "./http.js";
 import { DESTINATIONS, createSeed } from "./seed.js";
+import {
+  cloudStoreLabel,
+  isCloudEnabled,
+  loadUserDocument,
+  saveUserDocument,
+} from "./supabase.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -100,8 +113,97 @@ function persist() {
   renameSync(temp, DB_FILE);
 }
 
-/** Reads the database, creating it from the seed on first use. */
+/* ------------------------------------------------------------------ */
+/* Per-user context (cloud mode)                                       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Which user this request is serving. auth.js's guard sets it for every
+ * request when Supabase is configured; it is absent in local file mode and
+ * in standalone scripts (agent:publish), which only ever read.
+ */
+const context = new AsyncLocalStorage();
+
+/** Runs `fn` as `userId` — every store call inside it inherits the user. */
+export function runAsUser(userId, fn) {
+  return context.run({ userId }, fn);
+}
+
+/** The signed-in user for the current request, or null outside a request. */
+export function currentUserId() {
+  return context.getStore()?.userId ?? null;
+}
+
+/**
+ * One cached document per user. Handlers read it synchronously; every change
+ * is written back on that user's queue, so saves land in order and no route
+ * ever has to await a network round-trip.
+ */
+const userDocs = new Map();
+
+/** In-flight first loads, so two simultaneous first requests share one fetch. */
+const preloading = new Map();
+
+/** Loads a user's document (seeding a fresh one) before any handler reads it. */
+export async function preloadDocument(userId) {
+  if (userDocs.has(userId)) return;
+  let loading = preloading.get(userId);
+  if (!loading) {
+    loading = (async () => {
+      const stored = await loadUserDocument(userId);
+      const entry = { db: stored ? normalizeDb(stored) : createSeed(), chain: Promise.resolve() };
+      userDocs.set(userId, entry);
+      if (!stored) queueSave(userId, entry); // first visit — keep the seed
+    })().finally(() => preloading.delete(userId));
+    preloading.set(userId, loading);
+  }
+  await loading;
+}
+
+/**
+ * Serialises writes for one user. A failed save is logged and retried once
+ * after a pause; if that also fails, the next change saves the latest state.
+ */
+function queueSave(userId, entry, attempt = 0) {
+  entry.chain = entry.chain
+    .then(() => saveUserDocument(userId, entry.db))
+    .catch((error) => {
+      console.error(
+        `[memory-lane] could not save the document for ${userId} ` +
+          `(attempt ${attempt + 1}):`,
+        error.message || error
+      );
+      if (attempt < 1) {
+        setTimeout(() => queueSave(userId, entry, attempt + 1), 2_000);
+      }
+    });
+}
+
+/** The current user's cached document — cloud mode only, always behind the guard. */
+function cloudEntry() {
+  const userId = currentUserId();
+  const entry = userId ? userDocs.get(userId) : null;
+  if (!entry) throw new HttpError(401, "Please sign in to continue.");
+  return { userId, entry };
+}
+
+/* ------------------------------------------------------------------ */
+/* Reading and writing                                                 */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Reads the store. In cloud mode this is the signed-in user's own document;
+ * a standalone script outside any request gets a pristine seed copy to read
+ * (that is all agent:publish needs — the persona greeting).
+ */
 export function readDb() {
+  if (isCloudEnabled()) {
+    const userId = currentUserId();
+    if (!userId) return normalizeDb(createSeed());
+    const entry = userDocs.get(userId);
+    if (!entry) throw new HttpError(401, "Your session could not be loaded — sign in again.");
+    return entry.db;
+  }
   if (db) return db;
   if (existsSync(DB_FILE)) {
     try {
@@ -116,17 +218,25 @@ export function readDb() {
   return db;
 }
 
-/** Ensures the data file exists so the server can report where it writes. */
+/** Where the store lives, for the boot log. */
 export function ensureDataFile() {
+  if (isCloudEnabled()) return cloudStoreLabel();
   readDb();
   return DB_FILE;
 }
 
 /**
- * Applies a change to the database and writes it back to disk.
- * The mutator may return a value, which is passed through to the caller.
+ * Applies a change to the store and saves it (the file synchronously, the
+ * cloud document on the user's queue). The mutator may return a value, which
+ * is passed through to the caller.
  */
 export function mutate(mutator) {
+  if (isCloudEnabled()) {
+    const { userId, entry } = cloudEntry();
+    const result = mutator(entry.db);
+    queueSave(userId, entry);
+    return result;
+  }
   const current = readDb();
   const result = mutator(current);
   persist();
@@ -135,6 +245,12 @@ export function mutate(mutator) {
 
 /** Throws the given database away and starts again from the seed. */
 export function resetDb() {
+  if (isCloudEnabled()) {
+    const { userId, entry } = cloudEntry();
+    entry.db = createSeed();
+    queueSave(userId, entry);
+    return entry.db;
+  }
   db = createSeed();
   persist();
   return db;

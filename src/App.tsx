@@ -1,7 +1,9 @@
 import { useEffect, useState, type ComponentType, type SVGProps } from "react";
 import { clearAgentFocus, useAgentFocus, type AgentPage } from "./data/agentFocus";
+import { loadAuth, signOut, useAuth } from "./data/auth";
 import { greetingName, hydrateProfileFromService, initials, useProfile } from "./data/profile";
 import HomeView from "./components/HomeView";
+import AuthView from "./components/AuthView";
 import WhoIsThis from "./components/WhoIsThis";
 import CameraView from "./components/CameraView";
 import PhotoStories from "./components/PhotoStories";
@@ -48,6 +50,7 @@ export default function App() {
   const [profileOpen, setProfileOpen] = useState(false);
   const profile = useProfile();
   const agentFocus = useAgentFocus();
+  const auth = useAuth();
 
   // The companion can move the screen. It asks for a person to be shown — a
   // request to be on the page that holds their card — or asks to be taken
@@ -63,10 +66,26 @@ export default function App() {
     setTab("faces");
   }, [agentFocus]);
 
-  // The welcome step collects the name the whole app is greeted with.
+  // The welcome step collects the name the whole app is greeted with. It
+  // only runs once we know the server will let the request through — before
+  // a sign-in is refused with a 401.
   useEffect(() => {
-    hydrateProfileFromService();
+    void loadAuth();
   }, []);
+
+  useEffect(() => {
+    if (auth.status === "open" || auth.status === "signed-in") hydrateProfileFromService();
+  }, [auth.status]);
+
+  // Checking whether a login is needed comes before anything else loads.
+  if (auth.status === "checking") {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-cream">
+        <p className="font-heading text-xl text-ink-soft">Memory Lane</p>
+      </div>
+    );
+  }
+  if (auth.status === "locked") return <AuthView />;
 
   if (!profile.onboarded) return <WelcomeSetup />;
 
@@ -182,24 +201,35 @@ export default function App() {
               </p>
             </div>
 
-            <button
-              type="button"
-              onClick={() => setProfileOpen(true)}
-              aria-haspopup="dialog"
-              aria-label={`Personal details for ${profile.name || "you"}`}
-              className="ml-auto flex cursor-pointer items-center gap-2.5 rounded-full bg-card py-1.5 pl-1.5 pr-1.5 shadow-xs ring-1 ring-border transition-shadow duration-150 hover:shadow-sm sm:pr-4"
-            >
-              <span
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full font-heading text-sm font-extrabold text-white"
-                style={{ background: AVATAR_GRADIENT }}
-                aria-hidden="true"
+            <div className="ml-auto flex items-center gap-2">
+              {auth.status === "signed-in" && (
+                <button
+                  type="button"
+                  onClick={() => void signOut()}
+                  className="cursor-pointer rounded-full border border-border bg-card px-3.5 py-2 text-sm font-bold text-ink-soft shadow-xs transition-colors duration-150 hover:text-ink"
+                >
+                  Sign out
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setProfileOpen(true)}
+                aria-haspopup="dialog"
+                aria-label={`Personal details for ${profile.name || "you"}`}
+                className="flex cursor-pointer items-center gap-2.5 rounded-full bg-card py-1.5 pl-1.5 pr-1.5 shadow-xs ring-1 ring-border transition-shadow duration-150 hover:shadow-sm sm:pr-4"
               >
-                {initials(profile)}
-              </span>
-              <span className="hidden text-base font-bold text-ink sm:block">
-                {greetingName(profile) || "Your name"}
-              </span>
-            </button>
+                <span
+                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full font-heading text-sm font-extrabold text-white"
+                  style={{ background: AVATAR_GRADIENT }}
+                  aria-hidden="true"
+                >
+                  {initials(profile)}
+                </span>
+                <span className="hidden text-base font-bold text-ink sm:block">
+                  {greetingName(profile) || "Your name"}
+                </span>
+              </button>
+            </div>
           </div>
         </header>
 
