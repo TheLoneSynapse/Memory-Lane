@@ -1,5 +1,7 @@
 # Memory Lane
 
+🌐 **Live app: [https://memory-lane-fsuq.onrender.com](https://memory-lane-fsuq.onrender.com)**
+
 **Memory Lane** is a gentle photo and memory companion designed to help people hold on to the people, moments, and plans that matter most — and to talk about them out loud.
 
 A family member sets it up. The person using it just taps, listens, and speaks.
@@ -48,6 +50,14 @@ Nothing is ever deleted silently. When a plan is taken off, it is only hidden �
 | Voice | AssemblyAI Voice Agent API (WebSocket) |
 | Storage (default) | A single local JSON file — no database needed |
 | Storage (multi-user) | Supabase (Postgres + Storage) — optional |
+
+---
+
+## Demo
+
+Visit the live app at **[https://memory-lane-fsuq.onrender.com](https://memory-lane-fsuq.onrender.com)** — no sign-in required. It runs with pre-loaded demo content so you can explore every screen and try the voice companion straight away.
+
+> The app is hosted on Render's free tier. If it hasn't had a visitor in a while it may take 30–60 seconds to wake up on the first request — just wait a moment and refresh.
 
 ---
 
