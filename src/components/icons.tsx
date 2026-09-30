@@ -146,3 +146,33 @@ export const TrashIcon = (p: IconProps) => (
     <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
   </Base>
 );
+
+export const CropIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M6 2v14a2 2 0 0 0 2 2h14" />
+    <path d="M18 22V8a2 2 0 0 0-2-2H2" />
+  </Base>
+);
+
+export const RotateIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M20.5 12a8.5 8.5 0 1 1-2.6-6.1" />
+    <path d="M21 3.5V9h-5.5" />
+  </Base>
+);
+
+export const FlipIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M12 3v18" />
+    <path d="M8.5 7 4 12l4.5 5V7Z" />
+    <path d="M15.5 7 20 12l-4.5 5V7Z" />
+  </Base>
+);
+
+export const DownloadIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M12 3v12" />
+    <path d="m7.5 10.5 4.5 4.5 4.5-4.5" />
+    <path d="M4 20h16" />
+  </Base>
+);

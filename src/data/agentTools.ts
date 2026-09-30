@@ -93,6 +93,7 @@ export async function runAgentTool(name: string, args: ToolResult): Promise<Tool
     case "cancel_reminder": {
       const result = await apiPost<ToolResult>("/agent/cancel", {
         what: str(args.what),
+        day: str(args.day),
         reason: str(args.reason),
       });
       // Cancelling only hides it, but the day on screen still changes.
@@ -104,11 +105,25 @@ export async function runAgentTool(name: string, args: ToolResult): Promise<Tool
       const result = await apiPost<ToolResult>("/agent/move", {
         what: str(args.what),
         time: str(args.time),
+        day: str(args.day),
         headline: str(args.headline),
         details: str(args.details),
         reason: str(args.reason),
       });
       if (result.moved) await Promise.all([reloadSchedule(), reloadUpcomingEvents()]);
+      return result;
+    }
+
+    case "edit_memory": {
+      const result = await apiPost<ToolResult>("/agent/edit-memory", {
+        about: str(args.about),
+        date: str(args.date),
+        name: str(args.name),
+        note: str(args.note),
+      });
+      // The library and the moments on Home both hold what counts as a memory,
+      // so either could have been the one corrected.
+      if (result.changed) await Promise.all([reloadSavedMemories(), reloadHome()]);
       return result;
     }
 
@@ -149,7 +164,8 @@ export const TOOL_ACTIVITY: Record<string, string> = {
   search_the_web: "Looking that up online…",
   recall_memories: "Looking through your memories…",
   remember_this: "Saving that for you…",
+  edit_memory: "Changing that memory…",
   add_to_today: "Adding that to today…",
-  cancel_reminder: "Taking that off today…",
+  cancel_reminder: "Taking that off…",
   move_reminder: "Changing the time…",
 };

@@ -10,9 +10,15 @@ router.get("/today", (req, res) => {
   res.json(readDb().defaultTodayEvents);
 });
 
-/** GET /api/events/upcoming — events already waiting around the corner. */
+/**
+ * GET /api/events/upcoming — events already waiting around the corner.
+ *
+ * Entries the companion took off are kept but not shown: it hides rather than
+ * deletes, so the entry can be put back and a family member can still read what
+ * happened in GET /api/schedule/changes.
+ */
 router.get("/upcoming", (req, res) => {
-  res.json(readDb().upcomingEvents);
+  res.json(readDb().upcomingEvents.filter((event) => !event.hidden));
 });
 
 /**

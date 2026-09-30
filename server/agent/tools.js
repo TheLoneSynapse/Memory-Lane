@@ -127,13 +127,17 @@ export const TOOL_DEFS = [
   {
     name: "cancel_reminder",
     description:
-      "Take something off today's plan: an appointment, a visit, a call. Call this only when the person clearly wants it gone, or says they are not going — if they are merely unsure, ask them first. Pass what they called it, in their words. If more than one thing on today could be meant, the result lists today so you can ask which.",
+      "Take a plan off: an appointment, a visit, a call — today's, or one on a later day. Call this only when the person clearly wants it gone, or says they are not going — if they are merely unsure, ask them first. Pass what they called it, in their words, and the day only if they said which day. If more than one plan could be meant, the result lists the plans with their days so you can ask which.",
     parameters: {
       type: "object",
       properties: {
         what: {
           type: "string",
-          description: "What to take off, in their words, e.g. Ruby's lunch, the doctor, the telephone call.",
+          description: "What to take off, in their words, e.g. Ruby's lunch, the doctor, chess night.",
+        },
+        day: {
+          type: "string",
+          description: "Which day they mean, only if they said one: tomorrow, Wednesday, the 5th, or a date like 2026-10-05. Empty when they mean today or did not say.",
         },
         reason: {
           type: "string",
@@ -149,18 +153,21 @@ export const TOOL_DEFS = [
   {
     name: "move_reminder",
     description:
-      "Change when something today happens, or correct what it is called. Call this when the person says a plan is at a different time. Pass what they called it, in their words, and the new time as they said it. Say the new time back to them afterwards so they can correct you.",
+      "Change when a plan happens — today's, or one on a later day — or correct what it is called. Call this when the person says a plan is at a different time, or on a different day. Pass what they called it, in their words, the new time, and the day only if they said which day. Say the new time or day back to them afterwards so they can correct you.",
     parameters: {
       type: "object",
       properties: {
         what: {
           type: "string",
-          description: "What to move, in their words, e.g. Ruby's lunch, the telephone call.",
+          description: "What to move, in their words, e.g. Ruby's lunch, the telephone call, chess night.",
         },
         time: {
           type: "string",
-          description:
-            "The new time, as they said it, e.g. 1pm, after lunch, this evening. Leave empty only when they are just correcting the wording.",
+          description: "The new time, as they said it, e.g. 1pm, after lunch, this evening. Leave empty only when they are just correcting the wording or the day.",
+        },
+        day: {
+          type: "string",
+          description: "The day it should happen on now, only if they said one: today, tomorrow, Friday, the 5th, or a date like 2026-10-05. Empty when it is not changing.",
         },
         headline: {
           type: "string",
@@ -199,6 +206,36 @@ export const TOOL_DEFS = [
     execution_mode: "hold",
     timeout_seconds: 15,
     http: { method: "POST", path: "/today" },
+  },
+  {
+    name: "edit_memory",
+    description:
+      "Correct a memory that has already been saved: the year or date it happened, what it is called, or the note with it. Call this when they say something they kept is wrong — 'that was 2019, not 2021', 'change the year', 'it was Ruby, not Ellen' — rather than saving a new note beside it. Pass a word or two of their own to find it, and only what they asked to change. The result says plainly whether it changed and what it became; if it says nothing changed or it could not tell which memory, say so and ask which they mean — never claim a change it did not make.",
+    parameters: {
+      type: "object",
+      properties: {
+        about: {
+          type: "string",
+          description: "Which memory, in a word or two of their own — a name, a place, a year from it. A fragment, not a sentence.",
+        },
+        date: {
+          type: "string",
+          description: "When it happened or was saved, as they said it: a year (2019), March 2019, or 3 March 2019. Empty if they did not say.",
+        },
+        name: {
+          type: "string",
+          description: "A corrected name for it — who is in it, or what it is called. Empty if they did not correct it.",
+        },
+        note: {
+          type: "string",
+          description: "The note as it should read now, in their own words. Empty if they did not correct it.",
+        },
+      },
+      required: ["about"],
+    },
+    execution_mode: "hold",
+    timeout_seconds: 15,
+    http: { method: "POST", path: "/edit-memory" },
   },
   {
     name: "define_word",

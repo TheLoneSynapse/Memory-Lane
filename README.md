@@ -152,9 +152,10 @@ writes. The photos bucket stays private — images are fetched through
 | GET | `/api/agent/person` | companion tool — one person, by name or relationship |
 | GET | `/api/agent/memories` | companion tool — search the saved memories |
 | POST | `/api/agent/remember` | companion tool — keep a note |
+| POST | `/api/agent/edit-memory` | companion tool — correct a memory already saved |
 | POST | `/api/agent/today` | companion tool — add a reminder to today |
-| POST | `/api/agent/cancel` | companion tool — take something off today, keeping the record |
-| POST | `/api/agent/move` | companion tool — change when something today happens |
+| POST | `/api/agent/cancel` | companion tool — take a plan off, on any day, keeping the record |
+| POST | `/api/agent/move` | companion tool — change when a plan happens, on any day |
 | GET | `/api/schedule/changes` | what was moved or taken off, for family to review |
 
 Errors are JSON: `{ "error": { "status": 404, "message": "…" } }`.
@@ -235,9 +236,10 @@ too. Each tool is one small endpoint, so the behaviour lives in one place:
 | say what is happening today | `get_day` | `GET /api/agent/context` |
 | search the saved memories | `recall_memories` | `GET /api/agent/memories` |
 | keep a note | `remember_this` | `POST /api/agent/remember` |
+| correct a memory already saved — the year, its name, the note | `edit_memory` | `POST /api/agent/edit-memory` |
 | add a reminder to today | `add_to_today` | `POST /api/agent/today` |
-| take something off today | `cancel_reminder` | `POST /api/agent/cancel` |
-| change when something happens | `move_reminder` | `POST /api/agent/move` |
+| take a plan off, today or any day coming up | `cancel_reminder` | `POST /api/agent/cancel` |
+| change when a plan happens — today or any day coming up | `move_reminder` | `POST /api/agent/move` |
 | say what a word means | `define_word` | `GET /api/agent/define` |
 | search the web for a fact | `search_the_web` | `GET /api/agent/search` |
 | move to a screen ("go to memories") | `go_to` | in the browser — there is no endpoint to call |
@@ -271,12 +273,12 @@ request. The session and the screens never have to know about each other.
 
 ### Nothing is ever thrown away
 
-Taking something off the day is the one thing the companion does that changes a
+Taking something off a day is the one thing the companion does that changes a
 plan rather than adding to it, so it is deliberately undoable and visible.
-`cancel_reminder` never deletes an event: it marks it hidden, leaves the event
-where it was, and writes what the day used to say into `schedule.changes`. The
-same log records every move, and every removal made by hand in the Today
-screen, so the record is complete either way:
+`cancel_reminder` never deletes an event: on today or any day coming up it
+marks it hidden, leaves the plan where it was, and writes what the day used to
+say into `schedule.changes`. The same log records every move, and every removal
+made by hand in the Today screen, so the record is complete either way:
 
 ```json
 {

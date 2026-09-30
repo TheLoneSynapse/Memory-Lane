@@ -11,10 +11,11 @@ import {
   usePeopleState,
   type Person,
 } from "../data/people";
-import { reloadSavedMemories, useMemoriesState, type SavedMemoryCard } from "../data/memoryStore";
+import { useMemoriesState } from "../data/memoryStore";
 import AddPersonForm from "./AddPersonForm";
 import DataNotice from "./DataNotice";
 import PhotoPicker from "./PhotoPicker";
+import PhotoGallery from "./PhotoGallery";
 import {
   CameraIcon,
   CalendarIcon,
@@ -351,7 +352,8 @@ export default function WhoIsThis({
             />
           )}
 
-          <SavedFacePhotos
+          <PhotoGallery
+            scope="all"
             people={people}
             onOpenPerson={(p) => openPerson(p)}
             onAddToPeople={(memory) =>
@@ -603,108 +605,6 @@ function Avatar({ p }: { p: Person }) {
         <span className="font-heading text-2xl text-white/95">{p.initials}</span>
       )}
     </span>
-  );
-}
-
-/** Photos the user kept on this page from the camera. */
-function SavedFacePhotos({
-  people,
-  onOpenPerson,
-  onAddToPeople,
-}: {
-  people: Person[];
-  onOpenPerson: (p: Person) => void;
-  /** Offers the photo's person a place in the circle via the Add form. */
-  onAddToPeople: (memory: SavedMemoryCard) => void;
-}) {
-  const memoriesState = useMemoriesState();
-  const saved = memoriesState.data.filter(
-    (m) => m.destinations.includes("faces") && m.photoDataUrl
-  );
-  const [lightbox, setLightbox] = useState<LightboxContent | null>(null);
-
-  if (memoriesState.status === "error") {
-    return (
-      <DataNotice
-        state={memoriesState}
-        onRetry={reloadSavedMemories}
-        className="mt-9"
-      />
-    );
-  }
-  if (saved.length === 0) return null;
-
-  return (
-    <section className="mt-9" aria-labelledby="saved-photos-heading">
-      <h2
-        id="saved-photos-heading"
-        className="font-heading text-2xl text-ink"
-      >
-        Your saved photos
-      </h2>
-      <p className="mt-1 text-ink-soft">
-        Photos of people you kept — tap one to see it up close. If nobody in
-        your circle matches, you can add them there and then.
-      </p>
-      <ul className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3">
-        {saved.map((m) => {
-          const match = people.find(
-            (p) => p.name.trim().toLowerCase() === (m.name || "").trim().toLowerCase()
-          );
-          return (
-            <li key={m.id} className="rounded-2xl">
-              <button
-                type="button"
-                onClick={() =>
-                  setLightbox({
-                    src: m.photoDataUrl ?? null,
-                    label: m.name || "A saved photo",
-                    caption: m.caption,
-                    actionLabel: match
-                      ? `Open ${match.name}'s page`
-                      : "Add them to your circle",
-                    onAction: match
-                      ? () => onOpenPerson(match)
-                      : () => onAddToPeople(m),
-                  })
-                }
-                className="group w-full cursor-pointer rounded-2xl text-left transition-transform duration-150 ease-out focus-visible:-translate-y-0.5 active:scale-95"
-                aria-label={
-                  match
-                    ? `View a large preview of ${match.name}'s photo`
-                    : `${m.name || "Unnamed photo"} — view photo preview`
-                }
-              >
-                <img
-                  src={m.photoDataUrl ?? undefined}
-                  alt={m.caption}
-                  className="aspect-square w-full rounded-2xl object-cover shadow-sm ring-1 ring-border transition-shadow duration-150 group-hover:shadow-md"
-                />
-                <span className="mt-2 block text-base font-bold leading-tight text-ink">
-                  {m.name || "A saved photo"}
-                </span>
-                <span className="block text-sm leading-tight text-ink-soft">
-                  {m.caption}
-                </span>
-              </button>
-
-              {!match && (
-                <button
-                  type="button"
-                  onClick={() => onAddToPeople(m)}
-                  className="btn-ghost mt-2 w-full justify-center"
-                  aria-label={`Add ${m.name || "the person in this photo"} to your circle`}
-                >
-                  <PlusIcon className="h-4 w-4" aria-hidden="true" />
-                  Add to people
-                </button>
-              )}
-            </li>
-          );
-        })}
-      </ul>
-      {lightbox && <Lightbox content={lightbox} onClose={() => setLightbox(null)} />}
-    </section>
   );
 }
 

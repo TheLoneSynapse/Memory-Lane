@@ -29,12 +29,15 @@ export interface SavedMemoryInput {
   destinations: MemoryDestination[];
 }
 
-/** The fields the library's edit form can change. */
+/** The fields the library's edit form can change — all optional, so a
+ *  single field (a freshly edited picture, say) can be sent on its own. */
 export interface MemoryEdits {
-  name: string;
-  metNote: string;
-  caption: string;
-  destinations: MemoryDestination[];
+  name?: string;
+  metNote?: string;
+  caption?: string;
+  destinations?: MemoryDestination[];
+  /** A freshly edited picture: crop, rotate and filter all land here. */
+  photoDataUrl?: string | null;
 }
 
 /** The whole library, fetched once from the API and kept in memory. */

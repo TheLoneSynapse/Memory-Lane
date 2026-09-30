@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "r
 import { describeError } from "../data/api";
 import { addSavedMemory, type MemoryDestination } from "../data/memoryStore";
 import { DESTINATION_OPTIONS } from "./destinationOptions";
+import PhotoGallery from "./PhotoGallery";
 import { CameraIcon, CheckIcon, RepeatIcon, SparkleIcon } from "./icons";
 
 type Stage = "idle" | "starting" | "live" | "captured" | "saved";
@@ -234,6 +235,13 @@ export default function CameraView({ onOpenLibrary }: { onOpenLibrary: () => voi
               Choose from my device
             </button>
           </div>
+
+          <PhotoGallery
+            scope="all"
+            showAddTile={false}
+            heading="Photos you've taken"
+            blurb="Every photo kept with the camera, whichever page it was saved to. Tap one to see it big — then edit it, crop it, try a filter, save it to your device or take it away."
+          />
         </div>
       )}
 

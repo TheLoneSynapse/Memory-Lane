@@ -14,12 +14,16 @@
  *            GET  /api/agent/define   what a word means
  *            GET  /api/agent/search   the search engine, for the rest of the world
  *            POST /api/agent/remember keep a note
+ *            POST /api/agent/edit-memory  correct a memory already saved
  *            POST /api/agent/today    add a reminder to today
- *            POST /api/agent/cancel   take something off today, but keep it
- *            POST /api/agent/move     change when something today happens
+ *            POST /api/agent/cancel   take a plan off, on any day, but keep it
+ *            POST /api/agent/move     change when a plan happens, on any day
  *
- * Cancelling never destroys anything. The event is only marked hidden, and the
- * change is written to `schedule.changes`, which a family member reads through
+ * Plans are matched against every day at once — today, the days ahead in the
+ * schedule, and the "Coming up" list — because a person does not distinguish
+ * between where the app happens to keep them. Cancelling never destroys
+ * anything: the plan is only marked hidden, and the change is written to
+ * `schedule.changes`, which a family member reads through
  * GET /api/schedule/changes (see routes/schedule.js).
  *
  * The tool routes are what the companion calls to answer a question or save
@@ -29,9 +33,9 @@
  * process — the page only ever gets a single-use token.
  */
 import { Router } from "express";
-import { HttpError, asyncHandler, shortDate, text } from "../http.js";
+import { HttpError, asyncHandler, fullDate, shortDate, text } from "../http.js";
 import {
-  isTodayEvent,
+  isoDay,
   matchPersonId,
   memoryOfTheDay,
   mergeTodayEvents,
@@ -336,6 +340,7 @@ router.get("/now", (req, res) => {
 /** GET /api/agent/context — the day at a glance. */
 router.get("/context", (req, res) => {
   const db = readDb();
+  const plans = planCandidates(db);
   res.json({
     // Who they are, so a question about themselves never needs a second trip.
     aboutYou: {
@@ -345,14 +350,19 @@ router.get("/context", (req, res) => {
         (db.profile.name ? db.profile.name.split(/\s+/)[0] : ""),
       about: db.profile.about,
     },
-    today: mergeTodayEvents(db)
-      .filter((event) => isTodayEvent(event))
+    today: plans
+      .filter((plan) => plan.day === "Today")
       .map(({ time, headline, description }) => ({
         time,
         headline,
         description,
       })),
-    comingUp: db.upcomingEvents.map(({ day, title }) => ({ day, title })),
+    // Everything not today, with its day: the schedule's dated entries and the
+    // "Coming up" list alike. Without these the companion could not see the
+    // plans it is asked to change, and would have to guess at them.
+    comingUp: plans
+      .filter((plan) => plan.day !== "Today")
+      .map(({ day, time, headline }) => ({ day, time, headline })),
     memoryOfTheDay: memoryOfTheDay(db.home.moments),
     people: db.people.map(({ name, relationship }) => ({ name, relationship })),
   });
@@ -787,6 +797,213 @@ router.post("/remember", (req, res) => {
   });
 });
 
+/**
+ * POST /api/agent/edit-memory — correct a memory that is already saved.
+ *
+ * "That was 2019, not 2021" is the commonest correction there is, and a
+ * companion that answers "done" without any way to do it is worse than one
+ * that admits it cannot help. So this finds the memory the way recall does —
+ * the photo library and the written moments on Home, because both are "a
+ * memory" to the person saying it — changes only what was asked for, and
+ * answers with what it actually became.
+ *
+ * Nothing is guessed. A date that cannot be told, a memory that cannot be
+ * singled out, or a change the record cannot hold comes straight back
+ * unchanged with a hint about what to ask instead.
+ */
+router.post("/edit-memory", asyncHandler(async (req, res) => {
+  const body = req.body ?? {};
+  const about = text(body.about, { field: "about", max: 160 });
+  const saidDate = text(body.date, { field: "date", max: 60 });
+  const name = text(body.name, { field: "name", max: 40 });
+  const note = text(body.note, { field: "note", max: 280 });
+
+  if (!about) {
+    res.json({
+      changed: false,
+      error: '"about" is required — a word or two of their own about which memory they mean.',
+    });
+    return;
+  }
+  if (!saidDate && !name && !note) {
+    res.json({
+      changed: false,
+      error:
+        "There is nothing to change yet. Ask what should be different — the year, what it is called, or the note.",
+    });
+    return;
+  }
+
+  const db = readDb();
+  const wanted = searchWords(about);
+
+  const candidates = [
+    ...db.memories.map((memory) => ({
+      kind: "memory",
+      id: memory.id,
+      text: [memory.name, memory.metNote, memory.caption],
+      about: memory.name || memory.metNote,
+      note: memory.metNote,
+      when: memory.createdAt,
+    })),
+    ...db.home.moments.map((moment) => ({
+      kind: "moment",
+      id: moment.id,
+      text: [moment.title, moment.text],
+      about: moment.title,
+      note: moment.text,
+      when: "",
+    })),
+  ];
+
+  const ranked = candidates
+    .map((candidate) => ({ candidate, score: matchScore(wanted, ...candidate.text) }))
+    .filter(({ score }) => score > 0)
+    .sort((a, b) => b.score - a.score);
+
+  if (!ranked.length) {
+    res.json({
+      changed: false,
+      found: 0,
+      hint: "Nothing matched what they said. Ask for a word or two from the memory itself — a name, a place, a year in it.",
+    });
+    return;
+  }
+
+  const top = ranked[0].score;
+  const tied = ranked.filter(({ score }) => score === top);
+  if (tied.length > 1) {
+    res.json({
+      changed: false,
+      found: tied.length,
+      candidates: tied.map(({ candidate }) => ({
+        kind: candidate.kind,
+        about: candidate.about,
+        note: String(candidate.note ?? "").slice(0, 120),
+        when: candidate.when ? fullDate(new Date(candidate.when)) : "",
+      })),
+      hint: "More than one memory could be that. Ask which of these they mean, gently.",
+    });
+    return;
+  }
+
+  const chosen = ranked[0].candidate;
+
+  /* A saved photo: the date it carries is the date it was kept. */
+  if (chosen.kind === "memory") {
+    const previous = db.memories.find((memory) => memory.id === chosen.id);
+    const createdAt = saidDate
+      ? resolveMemoryDate(saidDate, previous.createdAt)
+      : previous.createdAt;
+    if (saidDate && !createdAt) {
+      res.json({
+        changed: false,
+        error: `I could not tell which date "${saidDate}" is. Ask for the year, such as 2019.`,
+      });
+      return;
+    }
+
+    const before = {
+      name: previous.name,
+      note: previous.metNote,
+      when: fullDate(new Date(previous.createdAt)),
+    };
+    const next = {
+      ...previous,
+      ...(name ? { name } : {}),
+      ...(note ? { metNote: note } : {}),
+      ...(saidDate ? { createdAt } : {}),
+    };
+
+    let applied = false;
+    mutate((database) => {
+      const index = database.memories.findIndex((memory) => memory.id === previous.id);
+      if (index !== -1) { database.memories[index] = next; applied = true; }
+    });
+
+    if (!applied) {
+      res.json({ changed: false, error: "The memory could not be updated. Please try again." });
+      return;
+    }
+
+    const said = [];
+    if (name) said.push(`It is now called ${next.name}.`);
+    if (note) said.push(`The note now reads: ${next.metNote}.`);
+    if (saidDate) said.push(`The date is now ${fullDate(new Date(next.createdAt))}.`);
+
+    res.json({
+      changed: true,
+      kind: "memory",
+      about: next.name || next.metNote,
+      before,
+      after: {
+        name: next.name,
+        note: next.metNote,
+        when: fullDate(new Date(next.createdAt)),
+      },
+      message: said.join(" "),
+    });
+    return;
+  }
+
+  /* A written moment: its year lives in its name — "The harbor, 2019". */
+  const moment = db.home.moments.find((item) => item.id === chosen.id);
+  let title = name || moment.title;
+
+  if (saidDate) {
+    const parsed = parseDatePhrase(saidDate);
+    if (!parsed || parsed.year === null) {
+      res.json({
+        changed: false,
+        error: "I could not tell which year that is. Ask for just the year, such as 2019.",
+      });
+      return;
+    }
+    if (parsed.precision !== "year") {
+      res.json({
+        changed: false,
+        error: "The name of a written memory only holds a year. Ask for just the year, such as 2019.",
+      });
+      return;
+    }
+    if (!/\b\d{4}\b/.test(title)) {
+      res.json({
+        changed: false,
+        error:
+          "That memory's name has no year in it, so there is no year to change. Its name or its words can be changed instead — ask which.",
+      });
+      return;
+    }
+    title = title.replace(/\b\d{4}\b/, String(parsed.year));
+  }
+
+  const next = { ...moment, title, ...(note ? { text: note } : {}) };
+
+  let appliedMoment = false;
+  mutate((database) => {
+    const index = database.home.moments.findIndex((item) => item.id === moment.id);
+    if (index !== -1) { database.home.moments[index] = next; appliedMoment = true; }
+  });
+
+  if (!appliedMoment) {
+    res.json({ changed: false, error: "The memory could not be updated. Please try again." });
+    return;
+  }
+
+  const said = [];
+  if (name || saidDate) said.push(`It is now called ${next.title}.`);
+  if (note) said.push(`The note now reads: ${next.text}.`);
+
+  res.json({
+    changed: true,
+    kind: "moment",
+    about: next.title,
+    before: { name: moment.title, note: moment.text, when: "" },
+    after: { name: next.title, note: next.text, when: "" },
+    message: said.join(" "),
+  });
+}));
+
 /** Words that carry no meaning when matching what a person called something. */
 const FILLER = new Set([
   "the",
@@ -820,9 +1037,10 @@ const FILLER = new Set([
 ]);
 
 /**
- * Which of today's events a phrase means. Matched on words, so "Ruby's lunch"
- * finds "Ruby is coming for lunch", and it returns every best-scoring event so
- * an ambiguous phrase can be asked about rather than guessed at.
+ * Which of the plans a phrase means. Matched on words, so "Ruby's lunch"
+ * finds "Ruby is coming for lunch", and it returns every best-scoring plan so
+ * an ambiguous phrase can be asked about rather than guessed at. The day is in
+ * the match too, so "chess on Wednesday" finds Wednesday's chess.
  */
 function matchEvents(events, wanted) {
   const tokens = wanted
@@ -833,7 +1051,9 @@ function matchEvents(events, wanted) {
 
   const scored = events
     .map((event) => {
-      const haystack = `${event.headline} ${event.description}`.toLowerCase();
+      // The day is in the haystack too: "chess on Wednesday" should find
+      // Wednesday's chess without them having to name it twice.
+      const haystack = `${event.headline} ${event.description} ${event.day ?? ""}`.toLowerCase();
       return { event, score: tokens.filter((token) => haystack.includes(token)).length };
     })
     .filter((candidate) => candidate.score > 0);
@@ -843,50 +1063,385 @@ function matchEvents(events, wanted) {
   return scored.filter((candidate) => candidate.score === best).map((candidate) => candidate.event);
 }
 
-const snapshot = (event) => ({
-  time: event.time,
-  headline: event.headline,
-  description: event.description,
+/* -- plans, on any day: today, the days ahead, and "Coming up" --------- */
+
+const WEEKDAYS = [
+  "sunday",
+  "monday",
+  "tuesday",
+  "wednesday",
+  "thursday",
+  "friday",
+  "saturday",
+];
+
+const MONTHS = {
+  january: 0,
+  jan: 0,
+  february: 1,
+  feb: 1,
+  march: 2,
+  mar: 2,
+  april: 3,
+  apr: 3,
+  may: 4,
+  june: 5,
+  jun: 5,
+  july: 6,
+  jul: 6,
+  august: 7,
+  aug: 7,
+  september: 8,
+  sept: 8,
+  sep: 8,
+  october: 9,
+  oct: 9,
+  november: 10,
+  nov: 10,
+  december: 11,
+  dec: 11,
+};
+
+/** The glue a day is wrapped in: "on the 3rd of October", "next Friday". */
+const DAY_FILLER = new Set([
+  "on",
+  "the",
+  "of",
+  "next",
+  "this",
+  "a",
+  "an",
+  "to",
+  "in",
+  "at",
+  "for",
+  "day",
+  "date",
+]);
+
+/** A said phrase as bare lower-case words: "Next Friday" → ["next", "friday"]. */
+function phraseWords(value) {
+  return String(value ?? "")
+    .toLowerCase()
+    .split(/[^a-z0-9-]+/)
+    .filter(Boolean);
+}
+
+/** The weekday a word names, or -1: "thur" is Thursday, "sat" is Saturday. */
+function weekdayOf(token) {
+  if (token.length < 3) return -1;
+  return WEEKDAYS.findIndex(
+    (name) => token === name || token.startsWith(name) || name.startsWith(token)
+  );
+}
+
+/** The day-words worth comparing: weekdays, today and tomorrow. */
+function dayWords(value) {
+  const known = new Set([...WEEKDAYS, "today", "tomorrow"]);
+  return phraseWords(value).filter((word) => known.has(word));
+}
+
+/** "today", "tomorrow" — the days that take no preposition when spoken. */
+function bareDay(day) {
+  const value = String(day ?? "").trim();
+  return /^(today|tomorrow)$/i.test(value) ? value.toLowerCase() : value;
+}
+
+/** "on Wednesday", but "today" and "tomorrow" take no preposition. */
+function onDay(day) {
+  const value = String(day ?? "").trim();
+  return /^(today|tomorrow)$/i.test(value) ? value.toLowerCase() : `on ${value}`;
+}
+
+/** "Today", "Tomorrow", "Wednesday", "3 Oct" — the day a plan falls on. */
+function dayLabel(iso) {
+  if (!iso) return "Today";
+  const date = new Date(`${iso}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return iso;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const diff = Math.round((date.getTime() - today.getTime()) / 86_400_000);
+  // The screen reads anything not ahead of us as today's, so the companion
+  // must read it the same way — or the two would disagree about the same plan.
+  if (diff <= 0) return "Today";
+  if (diff === 1) return "Tomorrow";
+  if (diff < 7) return date.toLocaleDateString("en-GB", { weekday: "long" });
+  return date.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+}
+
+/**
+ * A date said out loud, as the parts that were actually said: "2019" is a
+ * year, "March 2019" a month, "3 March 2019" a day. Null when it is not a
+ * date at all — the caller must say so rather than guess one.
+ */
+function parseDatePhrase(value) {
+  const phrase = String(value ?? "").trim();
+  if (!phrase) return null;
+
+  const iso = phrase.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (iso) {
+    return {
+      year: Number(iso[1]),
+      month: Number(iso[2]) - 1,
+      day: Number(iso[3]),
+      precision: "day",
+    };
+  }
+
+  const tokens = phraseWords(phrase).filter((token) => !DAY_FILLER.has(token));
+  if (!tokens.length) return null;
+  if (tokens.length === 1 && /^\d{4}$/.test(tokens[0])) {
+    return { year: Number(tokens[0]), month: null, day: null, precision: "year" };
+  }
+
+  let year = null;
+  let month = null;
+  let day = null;
+  let known = 0;
+
+  for (const token of tokens) {
+    if (month === null && Object.hasOwn(MONTHS, token)) {
+      month = MONTHS[token];
+      known += 1;
+      continue;
+    }
+    if (day === null && /^\d{1,2}(?:st|nd|rd|th)?$/.test(token)) {
+      day = Number(token.replace(/\D+/g, ""));
+      known += 1;
+      continue;
+    }
+    if (year === null && /^\d{4}$/.test(token)) {
+      year = Number(token);
+      known += 1;
+    }
+  }
+
+  if (!known) return null;
+  return {
+    year,
+    month,
+    day,
+    precision: day !== null ? "day" : month !== null ? "month" : "year",
+  };
+}
+
+/**
+ * Which calendar day they meant: "tomorrow", "Friday", "the 5th of October".
+ * Null when it cannot be told — the caller asks again rather than picking one.
+ */
+function resolvePlanDay(value) {
+  const tokens = phraseWords(value).filter((token) => !DAY_FILLER.has(token));
+  if (!tokens.length) return null;
+
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+  if (tokens.includes("today")) return isoDay(now);
+  if (tokens.includes("tomorrow")) {
+    return isoDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1));
+  }
+
+  const wanted = tokens.find((token) => weekdayOf(token) >= 0);
+  if (wanted) {
+    let diff = (weekdayOf(wanted) - now.getDay() + 7) % 7;
+    // "next Friday" said on a Friday means next week's, not today's.
+    if (diff === 0 && tokens.includes("next")) diff = 7;
+    return isoDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() + diff));
+  }
+
+  const parsed = parseDatePhrase(tokens.join(" "));
+  if (!parsed || parsed.day === null || parsed.month === null) return null;
+  const year = parsed.year ?? now.getFullYear();
+  // "the 3rd of October" in September is this October; in November, next year's.
+  const date = new Date(year, parsed.month, parsed.day);
+  if (parsed.year === null && date < startOfToday) date.setFullYear(year + 1);
+  return isoDay(date);
+}
+
+/**
+ * The date a memory should carry after a correction. Only what they said
+ * changes: "2019" keeps the month and day it already had, so a photo saved in
+ * March stays in March. Null when no year was said — a month on its own is not
+ * a date to put on someone's memory.
+ */
+function resolveMemoryDate(value, previousIso) {
+  const parsed = parseDatePhrase(value);
+  if (!parsed || parsed.year === null) return null;
+
+  const previous = new Date(previousIso || Date.now());
+  const at = Number.isNaN(previous.getTime()) ? new Date() : previous;
+  const month = parsed.month ?? at.getMonth();
+  const lastDay = new Date(parsed.year, month + 1, 0).getDate();
+  const day = parsed.day ?? Math.min(at.getDate(), lastDay);
+  return new Date(
+    parsed.year,
+    month,
+    day,
+    at.getHours(),
+    at.getMinutes(),
+    at.getSeconds(),
+    at.getMilliseconds()
+  ).toISOString();
+}
+
+/** Something that is a time rather than a day: "half seven", "3pm", "evening". */
+function looksLikeTime(value) {
+  return /\d|o'clock|half|quarter|morning|afternoon|evening|noon|midday|midnight|\b(?:am|pm)\b/i.test(
+    String(value ?? "")
+  );
+}
+
+/**
+ * Every plan the companion may change, in one shape: today's schedule, the
+ * days ahead in it, and the "Coming up" list. A question about "Wednesday"
+ * has to be matched against all three, because the person asking does not
+ * know — and should not have to know — where the app happens to keep them.
+ */
+function planCandidates(database = readDb()) {
+  const today = isoDay();
+
+  const scheduled = mergeTodayEvents(database).map((event) => {
+    // Anything dated ahead belongs to that day; anything else — undated, or
+    // written before dates existed — is part of today, as the screen reads it.
+    const rawDate = typeof event.date === "string" ? event.date : "";
+    const date = rawDate > today ? rawDate : "";
+    return {
+      kind: "schedule",
+      id: event.id,
+      date,
+      rawDate,
+      day: dayLabel(date),
+      time: event.time || "Anytime",
+      headline: event.headline,
+      description: event.description || "",
+      personId: event.personId || "",
+    };
+  });
+
+  const comingUp = (database.upcomingEvents ?? [])
+    .filter((event) => !event.hidden)
+    .map((event) => ({
+      kind: "upcoming",
+      id: event.id,
+      date: "",
+      rawDate: "",
+      // "Coming up" keeps a friendly word rather than a date, and that word
+      // is the day the entry already carries.
+      day: event.day || "Soon",
+      time: "",
+      headline: event.title,
+      description: "",
+      personId: event.personId || "",
+    }));
+
+  return [...scheduled, ...comingUp];
+}
+
+/**
+ * The plans on the day they said; with no day said, every plan. A day that
+ * cannot be told is an error rather than a guess — the caller asks again.
+ */
+function plansOnDay(plans, saidDay) {
+  const phrase = String(saidDay ?? "").trim();
+  if (!phrase) return { plans };
+
+  const iso = resolvePlanDay(phrase);
+  if (!iso) {
+    return {
+      error:
+        "I could not tell which day that is. Ask them to say a weekday, tomorrow, or a date like 2026-10-05.",
+    };
+  }
+
+  const label = dayLabel(iso).toLowerCase();
+  const said = dayWords(phrase);
+  const onThatDay = plans.filter((plan) => {
+    if (plan.kind === "schedule") return (plan.date || isoDay()) === iso;
+    // A "Coming up" entry carries a word, not a date: "Wednesday" against a
+    // label of "Wednesday", "Next Friday" against "Friday", and either side
+    // of "3 Oct" when it was written as a date.
+    const planLabel = String(plan.day ?? "").toLowerCase();
+    if (planLabel === label) return true;
+    return dayWords(plan.day).some((word) => word === label || said.includes(word));
+  });
+
+  return { plans: onThatDay };
+}
+
+/** The plans worth reading back when nothing matched. */
+const planList = (plans) => plans.map(({ day, time, headline }) => ({ day, time, headline }));
+
+/** What a plan said, in the shape the change record keeps. */
+const snapshot = (plan, over = {}) => ({
+  day: over.day ?? plan.day,
+  time: over.time ?? plan.time ?? "",
+  headline: over.headline ?? plan.headline,
+  description: over.description ?? plan.description ?? "",
 });
 
-const todayList = (events) => events.map(({ time, headline }) => ({ time, headline }));
+/**
+ * The answer when more than one plan could be meant — or when none could. It
+ * always carries the plans themselves with their days, so the companion can
+ * ask which rather than guess, and so a day with nothing on it says exactly
+ * that instead of pretending nothing anywhere matched.
+ */
+function unmatchedPlans(flag, { matches, plans, all, day }) {
+  const pool = matches.length ? matches : plans.length ? plans : all;
+  return {
+    [flag]: false,
+    found: matches.length,
+    day: day || null,
+    plans: planList(pool),
+    hint: matches.length
+      ? "More than one plan could be that. Ask which they mean, saying its day."
+      : plans.length
+        ? "Nothing matched. These are the plans — ask which they mean."
+        : "There is nothing on that day. These are all the plans there are — ask which day they meant.",
+  };
+}
 
-/** POST /api/agent/cancel — take something off today, keeping a record of it. */
+/** POST /api/agent/cancel — take a plan off, on any day, keeping a record. */
 router.post("/cancel", (req, res) => {
   const body = req.body ?? {};
   const what = text(body.what, { field: "what", max: 120 });
   const reason = text(body.reason, { field: "reason", max: 200 });
-  // Only today's events can be "taken off today" — a plan for Saturday is
-  // answered by changing its date, not by cancelling it.
-  const today = mergeTodayEvents().filter((event) => isTodayEvent(event));
-  const matches = matchEvents(today, what);
+  const saidDay = text(body.day, { field: "day", max: 60 });
 
-  if (matches.length !== 1) {
-    res.json({
-      cancelled: false,
-      found: matches.length,
-      today: todayList(today),
-      hint: matches.length
-        ? "More than one thing today could be that. Ask which they mean."
-        : "Nothing on today matched. These are what is on today — ask which they mean.",
-    });
+  const all = planCandidates();
+  const filtered = plansOnDay(all, saidDay);
+  if (filtered.error) {
+    res.json({ cancelled: false, error: filtered.error, plans: planList(all) });
     return;
   }
 
-  const event = matches[0];
+  const plans = filtered.plans;
+  const matches = matchEvents(plans, what);
+  if (matches.length !== 1) {
+    res.json(unmatchedPlans("cancelled", { matches, plans, all, day: saidDay }));
+    return;
+  }
+
+  const plan = matches[0];
+  const before = snapshot(plan);
 
   mutate((database) => {
-    // Hidden, never deleted: the id is marked removed and the event itself is
-    // left where it was, so the day can be put back and family can see it.
-    if (!database.schedule.removedIds.includes(event.id)) {
-      database.schedule.removedIds.push(event.id);
+    // Hidden, never deleted: a scheduled plan has its id marked removed, a
+    // "Coming up" entry is flagged, and either way the plan itself is left
+    // where it was — so the day can be put back and family can see it.
+    if (plan.kind === "schedule") {
+      if (!database.schedule.removedIds.includes(plan.id)) {
+        database.schedule.removedIds.push(plan.id);
+      }
+    } else {
+      const entry = (database.upcomingEvents ?? []).find((item) => item.id === plan.id);
+      if (entry) entry.hidden = true;
     }
     recordScheduleChange(database, {
       by: "companion",
       action: "cancelled",
-      eventId: event.id,
-      headline: event.headline,
-      before: snapshot(event),
+      eventId: plan.id,
+      headline: plan.headline,
+      before,
       after: null,
       reason,
     });
@@ -894,75 +1449,181 @@ router.post("/cancel", (req, res) => {
 
   res.json({
     cancelled: true,
-    what: event.headline,
-    time: event.time,
-    message: `${event.headline} has been taken off today. The record of it is kept.`,
+    what: plan.headline,
+    day: plan.day,
+    ...(plan.time ? { time: plan.time } : {}),
+    message: `${plan.headline} has been taken off ${onDay(plan.day)}. The record of it is kept.`,
   });
 });
 
-/** POST /api/agent/move — change when something today happens. */
+/** POST /api/agent/move — change when a plan happens, on any day. */
 router.post("/move", (req, res) => {
   const body = req.body ?? {};
   const what = text(body.what, { field: "what", max: 120 });
   const time = text(body.time, { field: "time", max: 40 });
+  const saidDay = text(body.day, { field: "day", max: 60 });
   const headline = text(body.headline, { field: "headline", max: 120 });
   const details = text(body.details, { field: "details", max: 400 });
   const reason = text(body.reason, { field: "reason", max: 200 });
-  const today = mergeTodayEvents().filter((event) => isTodayEvent(event));
-  const matches = matchEvents(today, what);
 
-  if (matches.length !== 1) {
+  const all = planCandidates();
+
+  // Unlike cancel, the day here is where the plan is going, not where it is
+  // now — so it picks the destination and never narrows the search. "Move
+  // chess to Friday" must still find Wednesday's chess.
+  const daySaid = saidDay || (!looksLikeTime(time) && resolvePlanDay(time) ? time : "");
+  const timeSaid = daySaid && daySaid === time ? "" : time;
+
+  if (!timeSaid && !daySaid && !headline && !details) {
+    res.json({ moved: false, error: "There is nothing to change yet. Ask for the new time or day." });
+    return;
+  }
+
+  const destination = daySaid ? resolvePlanDay(daySaid) : "";
+  if (daySaid && !destination) {
     res.json({
       moved: false,
-      found: matches.length,
-      today: todayList(today),
-      hint: matches.length
-        ? "More than one thing today could be that. Ask which they mean."
-        : "Nothing on today matched. These are what is on today — ask which they mean.",
+      error: "I could not tell which day that is. Ask for a weekday, tomorrow, or a date like 2026-10-05.",
+      plans: planList(all),
     });
     return;
   }
 
-  if (!time && !headline && !details) {
-    res.json({ moved: false, error: "There is nothing to change yet. Ask for the new time." });
+  const matches = matchEvents(all, what);
+  if (matches.length !== 1) {
+    res.json(unmatchedPlans("moved", { matches, plans: all, all }));
     return;
   }
 
-  const event = matches[0];
-  const after = {
-    time: time || event.time,
-    headline: headline || event.headline,
-    description: details || event.description,
-  };
-  // Reworded to name someone new? The chip on the card follows the wording;
-  // otherwise the event keeps the face it already had.
-  const personId = matchPersonId(readDb(), after.headline, after.description) || event.personId || "";
+  const plan = matches[0];
+  const wantedIso = destination || plan.rawDate;
+
+  const before = snapshot(plan);
+
+  /* A "Coming up" entry: a day and a line, and nothing else to hold. */
+  if (plan.kind === "upcoming") {
+    if (timeSaid || details) {
+      res.json({
+        moved: false,
+        found: 1,
+        plan: { day: plan.day, headline: plan.headline },
+        error: `"${plan.headline}" is a plan for a day: a day and a line, with no time or description of its own. You can change the day or the wording — ask them which.`,
+      });
+      return;
+    }
+
+    const after = snapshot(plan, {
+      day: wantedIso ? dayLabel(wantedIso) : plan.day,
+      headline: headline || plan.headline,
+      description: "",
+    });
+
+    if (after.day === before.day && after.headline === before.headline) {
+      res.json({
+        moved: false,
+        found: 1,
+        error: "Nothing was different from what the plan already said. Ask what should change.",
+      });
+      return;
+    }
+
+    mutate((database) => {
+      const entry = (database.upcomingEvents ?? []).find((item) => item.id === plan.id);
+      if (!entry) return;
+      entry.day = after.day;
+      entry.title = after.headline;
+      recordScheduleChange(database, {
+        by: "companion",
+        action: "moved",
+        eventId: entry.id,
+        headline: after.headline,
+        before,
+        after,
+        reason,
+      });
+    });
+
+    const dayChanged = after.day !== before.day;
+    res.json({
+      moved: true,
+      what: after.headline,
+      day: after.day,
+      from: { day: before.day, time: "" },
+      to: { day: after.day, time: "" },
+      message: dayChanged
+        ? `${after.headline} has moved to ${bareDay(after.day)}.`
+        : `${after.headline} has been changed.`,
+    });
+    return;
+  }
+
+  /* A scheduled plan: today's, or one dated ahead. */
+  const after = snapshot(plan, {
+    day: wantedIso ? dayLabel(wantedIso) : plan.day,
+    time: timeSaid || plan.time,
+    headline: headline || plan.headline,
+    description: details || plan.description,
+  });
+
+  if (
+    after.day === before.day &&
+    after.time === before.time &&
+    after.headline === before.headline &&
+    after.description === before.description
+  ) {
+    res.json({
+      moved: false,
+      found: 1,
+      error: "Nothing was different from what the plan already said. Ask what should change.",
+    });
+    return;
+  }
 
   mutate((database) => {
-    database.schedule.events[event.id] = {
-      id: event.id,
-      ...after,
-      // The date the event belongs to is not something a move changes.
-      date: event.date ?? "",
+    // Reworded to name someone new? The chip on the card follows the wording;
+    // otherwise the plan keeps the face it already had. Read from the same
+    // database snapshot the mutation writes to, not a second readDb() call.
+    const personId = matchPersonId(database, after.headline, after.description) || plan.personId || "";
+    database.schedule.events[plan.id] = {
+      id: plan.id,
+      time: after.time,
+      headline: after.headline,
+      description: after.description,
+      // The day only moves when they said a new one; otherwise the plan keeps
+      // the date it was already on — including an undated one, which is today.
+      date: wantedIso ?? plan.rawDate,
       personId,
     };
     recordScheduleChange(database, {
       by: "companion",
       action: "moved",
-      eventId: event.id,
+      eventId: plan.id,
       headline: after.headline,
-      before: snapshot(event),
+      before,
       after,
       reason,
     });
   });
 
+  const dayChanged = after.day !== before.day;
+  const timeChanged = after.time !== before.time;
+  const relative = /^(today|tomorrow)$/i.test(after.day);
+  const message =
+    dayChanged && timeChanged
+      ? `${after.headline} has moved to ${after.time} ${relative ? after.day.toLowerCase() : `on ${after.day}`}.`
+      : dayChanged
+        ? `${after.headline} has moved to ${bareDay(after.day)}.`
+        : timeChanged
+          ? `${after.headline} is now at ${after.time}.`
+          : `${after.headline} has been changed.`;
+
   res.json({
     moved: true,
     what: after.headline,
-    from: event.time,
-    to: after.time,
-    message: `${after.headline} is now at ${after.time}.`,
+    day: after.day,
+    from: { day: before.day, time: before.time },
+    to: { day: after.day, time: after.time },
+    message,
   });
 });
 

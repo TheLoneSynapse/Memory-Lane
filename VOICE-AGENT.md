@@ -21,7 +21,7 @@ up yet.
 
 ## What it can do
 
-Twelve things, in the order you are most likely to need them.
+Thirteen things, in the order you are most likely to need them.
 
 ### 1. Who they are — `who_am_i` / `remember_my_name`
 
@@ -97,27 +97,49 @@ appears on the Home screen while the call is still going.
 - "Make a note that the shed key is in the drawer."
 - "I want to keep that the boiler man was kind."
 
-### 7. Add a reminder to today — `add_to_today`
+### 7. Correct something already saved — `edit_memory`
+
+The memory library and the written moments on Home, both of which are "a
+memory" to the person saying it. When something they kept is wrong, it is
+changed where it stands rather than a new note being written beside it.
+
+- "Change the year of the harbour memory to 2019."
+- "That was 2021, not 2019."
+- "It was Ruby, not Ellen."
+- "The note should say the shed key is in the drawer."
+
+Only what they asked for changes — a year keeps the month and day it already
+had. If it cannot find which memory they mean, or cannot tell the date, it says
+so and asks rather than claiming a change it did not make.
+
+### 8. Add a reminder to today — `add_to_today`
 
 - "Remind me to call Ellen at three."
 - "Put chess on for tonight at seven."
 
-### 8. Take something off today — `cancel_reminder`
+### 9. Take a plan off — `cancel_reminder`
 
-Only when they clearly want it gone; if it is unclear the companion asks first.
+Today's, or one on any day coming up. Only when they clearly want it gone; if
+it is unclear the companion asks first.
 
 - "I'm not going to chess tonight."
 - "Take Ruby's lunch off today."
+- "Cancel the chess on Wednesday."
+- "The river walk on Saturday is off."
 
-> Nothing is destroyed. The event is only hidden, and the change is written to
+> Nothing is destroyed. The plan is only hidden, and the change is written to
 > the record a family member reads: `GET /api/schedule/changes`.
 
-### 9. Move something today — `move_reminder`
+### 10. Move a plan — `move_reminder`
+
+Today's, or one on any day coming up — the time, the day, or the wording.
 
 - "David's call is at half past seven now."
 - "Move Ruby's lunch to one o'clock."
+- "Chess is on Thursday this week."
+- "Ellen's call is on Friday now."
 
-### 10. Take me there — `go_to`
+### 11. Take me there — `go_to`
 
 Hands-free navigation: the screen moves while the call keeps going, so nobody
 has to reach for the buttons mid-sentence. Only when they ask to move — talking
@@ -132,7 +154,7 @@ The six screens are `home`, `faces`, `camera`, `stories`, `memories` and
 `today`. This one has no endpoint: it runs in the browser, because a phone call
 has no screen to move.
 
-### 11. What a word means — `define_word`
+### 12. What a word means — `define_word`
 
 The dictionary, for a word they have forgotten — or never quite knew. One
 plain meaning, spoken slowly, rather than a page of results.
@@ -144,7 +166,7 @@ plain meaning, spoken slowly, rather than a page of results.
 If there is no entry it says so gently and offers to look the phrase up more
 widely instead of inventing a meaning.
 
-### 12. Search the wider world — `search_the_web`
+### 13. Search the wider world — `search_the_web`
 
 Everything outside Memory Lane: a fact, a place, a date, how something works,
 who someone famous is. It answers in one or two sentences of its own from a few
@@ -173,8 +195,11 @@ in `.env` (Brave: `BRAVE_SEARCH_API_KEY`); see `.env.example`.
 | "What day is it?" | The day, the date and the time of day, spoken plainly |
 | "What's happening today?" | Today's plan and what is coming up |
 | "Remember that Ruby loves chocolate cookies" | Saved to the memory library, visible before the call ends |
+| "Change the year of the harbour memory to 2019" | Changed where it stands — and it says what it now reads |
 | "Remind me to call Ellen at three" | Added to today's plan |
 | "I'm not going to chess tonight" | Taken off today, kept in the record for family |
+| "Cancel the chess on Wednesday" | Wednesday's chess is off, kept in the record for family |
+| "Chess is on Thursday this week" | Wednesday's chess moves to Thursday |
 | "What did I tell you about the garden?" | Reads back anything saved about it |
 | "Go to memories" | The screen moves to the memory library, the call carrying on |
 | "What does bungalow mean?" | One plain meaning, from the dictionary |
@@ -195,9 +220,8 @@ whatever it is doing, and for this use case they matter more than the tools:
 - Waits through a pause: it reads the meaning of what was said rather than
   counting silence, so stopping mid-sentence does not cut them off — and it
   answers as soon as the sentence is plainly finished instead of waiting out a
-  fixed delay first. Interrupting it is still allowed.
-- Answers **only** from what the tools return. It never invents a person, a date
-  or a family detail.
+  fixed delay first. Interrupting it is still allowed.- Answers **only** from what the tools return. It never invents a person, a date or a family detail.
+- Never says something was saved, changed, moved or taken off unless the tool's own result says so — and when asked for a change, it makes the change rather than saying it cannot.
 - If it does not know, it says so gently and offers to keep it for next time.
 - Never mentions the tools, and never reads out links, lists or whole pages. If
   it did look something up, it simply says what it found.
@@ -238,7 +262,7 @@ and it asks which of them they mean.
 | File | What it holds |
 | --- | --- |
 | `server/agent/persona.js` | Who the companion is: prompt, greeting, voice, name keyterms |
-| `server/agent/tools.js` | The ten tools, as the model sees them |
+| `server/agent/tools.js` | The tools, as the model sees them |
 | `server/routes/agent.js` | The session routes, and the tool endpoints |
 | `server/routes/schedule.js` | `GET /api/schedule/changes`, the record of edits |
 | `src/data/voiceAgent.ts` | The live session: audio, transcripts, tool answers |
@@ -255,7 +279,7 @@ and it asks which of them they mean.
 | Needs | `ASSEMBLYAI_API_KEY` | that, plus a public `MEMORY_LANE_BASE_URL` |
 | Good for | local work and demos | a deployed app, and the same companion by phone |
 
-Twelve things either way — eleven by phone, since `go_to` has no screen to
+Thirteen things either way — twelve by phone, since `go_to` has no screen to
 move. To publish the stored version:
 
 ```bash
